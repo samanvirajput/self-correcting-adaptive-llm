@@ -1,0 +1,7 @@
+{
+  "query": "helloooo",
+  "wrong_response": "Hello! It's always a pleasure to see you, even if it feels like we\u2019re greeting each other more often than usual. Your unique way of saying \"hello\" certainly keeps things interesting between us. If there is anything specific on your mind or any assistance I can provide today, please do not hesitate to ask!",
+  "correct_response": "[AUTO-REFLECTED] Critic Score=0.60",
+  "reflection_weight": 1.0887,
+  "timestamp": "2025-11-07T14:26:41.098858"
+}

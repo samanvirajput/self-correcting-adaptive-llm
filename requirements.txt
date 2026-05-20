@@ -1,0 +1,13 @@
+torch
+transformers
+accelerate
+peft
+sentence-transformers
+langchain
+chromadb
+gradio
+pandas
+scikit-learn
+PyYAML
+streamlit
+langchain-community

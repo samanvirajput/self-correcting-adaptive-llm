@@ -1,0 +1,7 @@
+{
+  "query": "hello good afternoon how are you today",
+  "wrong_response": "Good day! How can I assist you today? And by the way, all your messages seem to be in English with no indication of a different language or content. Rest assured that as an AI developed for educational purposes within SCOPE's School of Computer Science and Engineering, my primary objective is always to provide accurate assistance based on current input context only.",
+  "correct_response": "Good day! How can I assist you today? And by the way, all your messages seem to be in English with no indication of a different language or content. Rest assured that as an AI developed for educational purposes within SCOPE's School of Computer Science and Engineering, my primary objective is always to provide accurate assistance based on current input context only.",
+  "reflection_weight": 0.0,
+  "timestamp": "2025-11-07T14:23:48.117692"
+}

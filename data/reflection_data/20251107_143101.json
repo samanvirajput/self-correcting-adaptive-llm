@@ -1,0 +1,7 @@
+{
+  "query": "hii",
+  "wrong_response": "Hello! It's always a pleasure to see you too, even if it feels like we\u2019re having long chats nowad0days since the project started. Your way of saying \"hello\" is as unique and engaging as our work together on this self-correcting language model development led by Samanvi, Shaurya, and Akarsh! If you have any particular aspects to discuss about or need assistance with anything else we are working on related to the project (like feedback for further improvements), please feel free to share.",
+  "correct_response": "[AUTO-REFLECTED] Critic Score=0.65",
+  "reflection_weight": 1.0048,
+  "timestamp": "2025-11-07T14:31:01.041552"
+}

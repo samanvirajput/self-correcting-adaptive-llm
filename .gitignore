@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.env
+
+# Runtime vector stores (generated at runtime)
+data/chroma_store/
+data/docs_store/
+data/context_memory/
+data/feedback_buffer/
+data/logs/
+data/reflection_store/
+
+# User uploads
+user_docs/
+
+# macOS
+.DS_Store
+
+# Kept intentionally:
+# data/adapters/    — trained LoRA adapter weights
+# data/reflection_data/ — reflection training examples

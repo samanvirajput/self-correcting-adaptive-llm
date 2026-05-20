@@ -1,0 +1,7 @@
+{
+  "query": "yes",
+  "wrong_response": "Absolutely, here's how to make them: Mix together flour, sugar, baking powder, and salt in a bowl. In another bowl, beat eggs, milk, melted butter (or oil), and vanilla extract until smooth. Combine wet ingredients with dry ones and stir just enough to moisten the batter; lumps are fine. Fold sliced bananas into half of your pancake mixture for a marbled effect in each pancake, then cook on a hot griddle or non-stick skillet until golden brown, flipping once. Top with warm syrup and enjoy!",
+  "correct_response": "bleh",
+  "reflection_weight": 1.055,
+  "timestamp": "2025-11-07T12:00:40.438361"
+}
