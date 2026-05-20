@@ -1,219 +1,162 @@
-import streamlit as st
+"""
+app.py — Interactive CLI for the self-correcting adaptive LLM.
+
+Commands:
+  /forget <id>   — delete a specific memory by id
+  /memories      — list all stored memories
+  /export        — export all user data to JSON
+  /stats         — show session stats
+  /quit          — exit
+"""
 import os
-from backend.llm_engine import LLMEngine
-from backend.context_manager import ContextManager
-from backend.self_correction import SelfReflection
-from backend.embeddings import EmbeddingEngine
-from backend.vector_memory import VectorMemory
-from backend.critic_evaluator import CriticEvaluator
-from backend.forget_manager import ForgetManager
-from backend.feedback_logger import FeedbackLogger
-from backend.rag_retriever import RAGRetriever
+import sys
+import json
 
-# ==========================================================
-# INITIALIZE BACKEND SYSTEMS
-# ==========================================================
-@st.cache_resource
-def init_system():
-    llm = LLMEngine(model_name="phi3:mini")
-    embedder = EmbeddingEngine(model_name="all-MiniLM-L6-v2")
-    memory = VectorMemory(persist_directory="./data/chroma_store")
-    context_manager = ContextManager()
-    reflector = SelfReflection()
-    critic = CriticEvaluator()
-    forget_manager = ForgetManager()
-    feedback_logger = FeedbackLogger()
-    rag = RAGRetriever()
-    return llm, embedder, memory, context_manager, reflector, critic, forget_manager, feedback_logger, rag
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from core.llm.loader import load_model, get_model_info
+from core.llm.inference import generate, get_session_token_count
+from core.embeddings.pipeline import embed_text
+from core.reflection.engine import reflect
+from core.correction.engine import detect_patterns, log_correction, get_active_corrections
+from core.memory.short_term import add_turn, get_context
+from core.memory.long_term import LongTermMemory
+from core.memory.forget import prune_low_value
+from core.prompt.builder import build_prompt
+from core.finetuning.lora_trainer import correction_count_from_data, FINETUNE_THRESHOLD
+from privacy.manager import export_user_data, list_memories, forget_memory
+
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+USER_ID = os.getenv("USER_ID", "default")
+SESSION_ID = "main"
 
 
-llm, embedder, memory, context_manager, reflector, critic, forget_manager, feedback_logger, rag = init_system()
+def _prompt_prefix(memory: LongTermMemory) -> str:
+    n_corr = len(get_active_corrections(USER_ID))
+    n_mem = memory.count()["total"]
+    return f"[{n_corr} corrections | {n_mem} memories] > "
 
-# ==========================================================
-# PAGE CONFIG & CSS
-# ==========================================================
-st.set_page_config(page_title="Adaptive Local LLM", page_icon="🧠", layout="wide")
 
-st.markdown("""
-<style>
-    body, .main { background-color: #0e1117; color: #f0f0f0; font-family: 'Inter', sans-serif; }
-    header, footer { visibility: hidden; }
+def _handle_command(cmd: str, memory: LongTermMemory) -> bool:
+    """Handle /commands. Returns True if handled."""
+    cmd = cmd.strip()
 
-    .user-bubble {
-        background-color: #1f1f29;
-        padding: 0.9rem 1rem;
-        border-radius: 8px;
-        margin: 0.5rem 0;
-        border-left: 3px solid #3a7bd5;
-    }
-    .assistant-bubble {
-        background-color: #252532;
-        padding: 1rem 1.2rem;
-        border-radius: 8px;
-        border-left: 3px solid #ff4b4b;
-        margin: 0.7rem 0 1.2rem 0;
-    }
+    if cmd.startswith("/forget "):
+        mem_id = cmd[8:].strip()
+        ok = forget_memory(USER_ID, mem_id, memory)
+        print(f"  {'Deleted' if ok else 'Not found'}: {mem_id}")
+        return True
 
-    .block-container h1, h2, h3, h4 { color: #ff4b4b; font-weight: 600; }
-    code {
-        background-color: #1b1f27;
-        color: #ffcc66;
-        padding: 2px 5px;
-        border-radius: 4px;
-        font-family: 'JetBrains Mono', monospace;
-    }
-    pre {
-        background-color: #1b1f27;
-        color: #ffcc66;
-        padding: 8px;
-        border-radius: 6px;
-        overflow-x: auto;
-    }
-    ul, ol { margin-left: 1.2rem; }
+    if cmd == "/memories":
+        mems = list_memories(USER_ID, memory)
+        if not mems:
+            print("  No memories stored yet.")
+        for m in mems:
+            print(f"  [{m['tier']}] {m['id']} — {m['content']}")
+        return True
 
-    .metric-container {
-        display: flex;
-        gap: 0.5rem;
-        flex-wrap: wrap;
-        margin-top: 0.3rem;
-        margin-bottom: 1rem;
-    }
-    .metric-badge {
-        font-size: 0.8rem;
-        padding: 0.3rem 0.6rem;
-        border-radius: 6px;
-        font-weight: 600;
-    }
-    .fact { background-color: #007acc33; color: #66ccff; }
-    .help { background-color: #00993333; color: #33ff88; }
-    .ling { background-color: #ffcc0033; color: #ffcc33; }
-    .overall { background-color: #ff444433; color: #ff7777; }
-    .reflect { background-color: #6633ff33; color: #aa88ff; }
+    if cmd == "/export":
+        data = export_user_data(USER_ID, memory)
+        out_path = f"./data/export_{USER_ID}.json"
+        os.makedirs("./data", exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(data, f, indent=2)
+        print(f"  Exported to {out_path}")
+        return True
 
-    section[data-testid="stSidebar"] {
-        background-color: #161a1f;
-        border-right: 1px solid #2b2b36;
-    }
+    if cmd == "/stats":
+        counts = memory.count()
+        tokens = get_session_token_count(SESSION_ID)
+        corrections = get_active_corrections(USER_ID)
+        n_reflect = correction_count_from_data()
+        print(f"  tokens this session : {tokens}")
+        print(f"  hot memories        : {counts['hot']}")
+        print(f"  cold memories       : {counts['cold']}")
+        print(f"  active corrections  : {len(corrections)}")
+        print(f"  reflection logs     : {n_reflect} / {FINETUNE_THRESHOLD} (fine-tune threshold)")
+        return True
 
-    .stChatInput textarea {
-        background-color: #1c1f25 !important;
-        color: #f0f0f0 !important;
-        border-radius: 6px !important;
-    }
-</style>
-""", unsafe_allow_html=True)
+    if cmd in ("/quit", "/exit", "/q"):
+        print("Goodbye.")
+        sys.exit(0)
 
-# ==========================================================
-# SESSION STATE
-# ==========================================================
-if "history" not in st.session_state:
-    st.session_state.history = []
+    return False
 
-# ==========================================================
-# SIDEBAR CONTROLS
-# ==========================================================
-with st.sidebar:
-    st.header("⚙️ Controls")
-    st.caption("Manage model behavior and data.")
-    if st.button("🧹 Forget All Memory"):
-        forget_manager.wipe_all()
-        st.success("All memory cleared.")
 
-    uploaded_file = st.file_uploader("📄 Upload Document", type=["pdf", "docx", "txt"])
-    if uploaded_file:
-        temp_path = f"./user_docs/{uploaded_file.name}"
-        with open(temp_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        st.success(f"Uploaded: {uploaded_file.name}")
+def main():
+    print("Loading model...")
+    model = load_model()
+    info = get_model_info(model)
+    print(f"  backend : {info.get('backend')}")
+    print(f"  model   : {info.get('model')}")
 
-# ==========================================================
-# HEADER
-# ==========================================================
-st.markdown("## ◆ Adaptive Self-Learning LLM Interface")
-st.caption("Built for full offline personalization and continuous self-reflection.")
+    print("Loading long-term memory...")
+    memory = LongTermMemory(user_id=USER_ID, dim=384)
+    counts = memory.count()
+    print(f"  hot={counts['hot']}  cold={counts['cold']}")
 
-# ==========================================================
-# CHAT INPUT HANDLING
-# ==========================================================
-user_input = st.chat_input("Type your message or command...")
+    print("\nReady. Type /quit to exit.\n")
 
-if user_input:
-    st.session_state.history.append({"role": "user", "content": user_input})
-    st.markdown(f"<div class='user-bubble'>◉ {user_input}</div>", unsafe_allow_html=True)
+    while True:
+        try:
+            user_input = input(_prompt_prefix(memory)).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye.")
+            break
 
-    # Forget command
-    if user_input.startswith("/forget "):
-        keyword = user_input.replace("/forget ", "").strip()
-        forget_manager.forget_reflection(keyword)
-        st.markdown(f"<div class='assistant-bubble'>■ Forgotten entries containing '{keyword}'.</div>", unsafe_allow_html=True)
-    else:
-        retrieved_context = context_manager.retrieve_context(user_input)
-        full_prompt = f"Context: {retrieved_context}\n\nUser: {user_input}\nAssistant:"
+        if not user_input:
+            continue
 
-        with st.spinner("Thinking..."):
-            response = llm.generate(full_prompt, max_new_tokens=800)
+        if _handle_command(user_input, memory):
+            continue
 
-        # Render formatted markdown
-        st.markdown("<div class='assistant-bubble'>◆</div>", unsafe_allow_html=True)
-        st.markdown(response, unsafe_allow_html=False)
-        st.session_state.history.append({"role": "assistant", "content": response})
+        # --- 1. Build context ---
+        short_ctx = get_context(SESSION_ID, max_turns=5)
+        qvec = embed_text(user_input, model_name=EMBEDDING_MODEL)
+        retrieved = memory.retrieve(qvec, top_k=5)
+        corrections = get_active_corrections(USER_ID)
 
-        # Critic evaluation
-        critic_result = critic.evaluate(user_input, response, retrieved_context)
-        reflection_weight = round(max(0.0, min(1.0, 1 - critic_result["critic_score"])), 3)
-
-        st.markdown(
-            f"<div class='metric-container'>"
-            f"<span class='metric-badge fact'>Factual: {critic_result['factuality']:.2f}</span>"
-            f"<span class='metric-badge help'>Helpful: {critic_result['helpfulness']:.2f}</span>"
-            f"<span class='metric-badge ling'>Linguistic: {critic_result['linguistic_quality']:.2f}</span>"
-            f"<span class='metric-badge overall'>Overall: {critic_result['critic_score']:.2f}</span>"
-            f"<span class='metric-badge reflect'>Reflect: {reflection_weight:.2f}</span>"
-            f"</div>", unsafe_allow_html=True
+        # --- 2. Build prompt + generate ---
+        prompt = build_prompt(
+            query=user_input,
+            short_term_context=short_ctx,
+            retrieved_memories=retrieved,
+            active_corrections=corrections,
         )
+        response = generate(prompt, model, max_tokens=512, session_id=SESSION_ID)
 
-        reflector.log_feedback(user_input, response, f"[AUTO-REFLECTED] Critic={critic_result['critic_score']:.2f}")
+        # --- 3. Reflect ---
+        result = reflect(user_input, response, model)
+        final_response = result.revised if result.was_corrected else response
 
-        # ==================================================
-        # SELF-REFLECTION LOOP (with new critic evaluation)
-        # ==================================================
-        if reflection_weight > 0.6:
-            st.warning("Low critic score — regenerating improved response...")
-            regen_prompt = (
-                f"The previous answer was weak (score={critic_result['critic_score']:.2f}). "
-                f"Rewrite it to be clearer, more accurate, and engaging.\n\n"
-                f"User: {user_input}\nOld Response: {response}\nImproved Response:"
-            )
-            improved = llm.generate(regen_prompt, max_new_tokens=800)
+        print(f"\n{final_response}\n")
+        if result.was_corrected:
+            print(f"  [self-corrected — {len(result.issues)} issue(s) found]\n")
 
-            # Display regenerated response
-            st.markdown("<div class='assistant-bubble'>◇</div>", unsafe_allow_html=True)
-            st.markdown(improved, unsafe_allow_html=False)
+        # --- 4. Detect + log correction patterns ---
+        if result.was_corrected:
+            patterns = detect_patterns(result, USER_ID)
+            for p in patterns:
+                log_correction(p)
 
-            # Evaluate improved response
-            improved_score = critic.evaluate(user_input, improved, retrieved_context)
-            improved_reflect = round(max(0.0, min(1.0, 1 - improved_score["critic_score"])), 3)
+        # --- 5. Store in short-term + long-term memory ---
+        add_turn(SESSION_ID, "user", user_input)
+        add_turn(SESSION_ID, "assistant", final_response)
 
-            # Display improved metrics
-            st.markdown(
-                f"<div class='metric-container'>"
-                f"<span class='metric-badge fact'>Factual: {improved_score['factuality']:.2f}</span>"
-                f"<span class='metric-badge help'>Helpful: {improved_score['helpfulness']:.2f}</span>"
-                f"<span class='metric-badge ling'>Linguistic: {improved_score['linguistic_quality']:.2f}</span>"
-                f"<span class='metric-badge overall'>Overall: {improved_score['critic_score']:.2f}</span>"
-                f"<span class='metric-badge reflect'>Reflect: {improved_reflect:.2f}</span>"
-                f"</div>", unsafe_allow_html=True
-            )
+        mem_content = f"User: {user_input}\nAssistant: {final_response}"
+        rvec = embed_text(mem_content, model_name=EMBEDDING_MODEL)
+        memory.store(mem_content, rvec, metadata={"type": "conversation"})
 
-            reflector.log_feedback(user_input, response, improved)
-            st.success("✅ Self-reflection applied and re-evaluated!")
+        # Periodic pruning (every 20 turns)
+        total_turns = len(get_context(SESSION_ID))
+        if total_turns % 40 == 0 and total_turns > 0:
+            pruned = prune_low_value(USER_ID, memory, threshold=0.2)
+            if pruned:
+                print(f"  [pruned {pruned} low-value memories]")
 
-# ==========================================================
-# DISPLAY CHAT STREAM
-# ==========================================================
-for msg in st.session_state.history:
-    if msg["role"] == "user":
-        st.markdown(f"<div class='user-bubble'>◉ {msg['content']}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div class='assistant-bubble'>◆</div>", unsafe_allow_html=True)
-        st.markdown(msg["content"], unsafe_allow_html=False)
+
+if __name__ == "__main__":
+    main()
